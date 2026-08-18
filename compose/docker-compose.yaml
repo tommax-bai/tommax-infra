@@ -1,0 +1,72 @@
+# Tommax 本地开发环境（docs/05 §2.3：本地一键起 PG/Redis/MinIO）
+# 用法: docker compose -f tommax-infra/compose/docker-compose.yaml up -d
+name: tommax-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tommax
+      POSTGRES_PASSWORD: tommax_dev
+      POSTGRES_DB: tommax_generation
+    ports: ["5432:5432"]
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tommax"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: tommax
+      MINIO_ROOT_PASSWORD: tommax_dev_secret
+    ports: ["9000:9000", "9001:9001"]
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # 初始化桶：tommax-media（私有）+ 下载策略供本地直链调试
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 tommax tommax_dev_secret &&
+      mc mb -p local/tommax-media &&
+      mc anonymous set download local/tommax-media &&
+      echo BUCKET_READY"
+
+  # 任务监控面板（amd64 镜像，arm64 机器需 Rosetta；非必需，profile 按需启用：--profile tools up -d）
+  asynqmon:
+    image: hibiken/asynqmon:latest
+    platform: linux/amd64
+    profiles: ["tools"]
+    ports: ["8980:8080"]
+    command: ["--redis-addr=redis:6379"]
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  pg_data:
+  minio_data:
